@@ -1,0 +1,119 @@
+# docker-compose.yml
+# =============================================================================
+# Grammify — Django + DRF production Docker Compose.
+#
+# Services:
+#   postgres  — primary database (users, tasks, tokens)
+#   redis     — Celery broker + quota counters + cache
+#   web       — Django app via Gunicorn
+#   worker    — Celery worker
+#   nginx     — reverse proxy (port 80)
+#   prometheus — metrics scraping
+#   grafana   — metrics dashboard
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: docker.arvancloud.ir/postgres:16
+    container_name: django_grammify_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-grammify}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-grammify}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-grammify}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: django_grammify_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # Web — Django via Gunicorn
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        HTTP_PROXY: http://192.168.100.16:8080
+        HTTPS_PROXY: http://192.168.100.16:8080
+        http_proxy: http://192.168.100.16:8080
+        https_proxy: http://192.168.100.16:8080
+        all_proxy: http://192.168.100.16:8080
+    container_name: django_grammify_web
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_ENV: development
+      DJANGO_SETTINGS_MODULE: config.settings
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+      - external
+    ports:
+      - 8000:8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  # prometheus_data:
+  # grafana_data:
+
+# ---------------------------------------------------------------------------
+# Networks
+# ---------------------------------------------------------------------------
+networks:
+  internal:
+    driver: bridge
+  external:
+    driver: bridge
